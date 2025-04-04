@@ -1,4 +1,3 @@
-import { createFireworks } from '@ai-sdk/fireworks';
 import { createOpenAI } from '@ai-sdk/openai';
 import {
   extractReasoningMiddleware,
@@ -17,42 +16,77 @@ const openai = process.env.OPENAI_KEY
     })
   : undefined;
 
-const fireworks = process.env.FIREWORKS_KEY
-  ? createFireworks({
-      apiKey: process.env.FIREWORKS_KEY,
+// DeepSeek provider using OpenAI compatible API
+const deepseek = process.env.DEEPSEEK_KEY
+  ? createOpenAI({
+      apiKey: process.env.DEEPSEEK_KEY,
+      baseURL: process.env.DEEPSEEK_ENDPOINT || 'https://api.deepseek.com/v1',
     })
   : undefined;
 
-const customModel = process.env.CUSTOM_MODEL
-  ? openai?.(process.env.CUSTOM_MODEL, {
+const customModel = process.env.CUSTOM_MODEL && openai
+  ? openai(process.env.CUSTOM_MODEL, {
       structuredOutputs: true,
     })
   : undefined;
 
-// Models
-
-const o3MiniModel = openai?.('o3-mini', {
-  reasoningEffort: 'medium',
-  structuredOutputs: true,
-});
-
-const deepSeekR1Model = fireworks
+// Create configurable OpenAI model based on env variables
+const openaiModel = openai && process.env.OPENAI_MODEL
   ? wrapLanguageModel({
-      model: fireworks(
-        'accounts/fireworks/models/deepseek-r1',
+      model: openai(
+        process.env.OPENAI_MODEL,
+        {
+          reasoningEffort: process.env.OPENAI_REASONING_EFFORT || 'medium',
+          structuredOutputs: true,
+        }
+      ) as LanguageModelV1,
+      middleware: extractReasoningMiddleware({ tagName: 'think' }),
+    })
+  : undefined;
+
+// Fallback to o3-mini if no OPENAI_MODEL is specified
+const o3MiniModel = openai && !process.env.OPENAI_MODEL
+  ? openai('o3-mini', {
+      reasoningEffort: 'medium',
+      structuredOutputs: true,
+    })
+  : undefined;
+
+// DeepSeek models with configurable model selection
+const deepSeekModel = deepseek 
+  ? wrapLanguageModel({
+      model: deepseek(
+        process.env.DEEPSEEK_MODEL || 'deepseek-v3',
       ) as LanguageModelV1,
       middleware: extractReasoningMiddleware({ tagName: 'think' }),
     })
   : undefined;
 
 export function getModel(): LanguageModelV1 {
+  // First check for a custom model specified in .env
   if (customModel) {
     return customModel;
   }
-
-  const model = deepSeekR1Model ?? o3MiniModel;
+  
+  // Check for a model specified by MODEL_PROVIDER env var
+  const modelProvider = process.env.MODEL_PROVIDER?.toLowerCase() || '';
+  
+  if (modelProvider === 'deepseek' && deepSeekModel) {
+    return deepSeekModel;
+  }
+  
+  if (modelProvider === 'openai') {
+    // Use the specified OpenAI model or fallback to o3-mini
+    const selectedOpenAIModel = openaiModel || o3MiniModel;
+    if (selectedOpenAIModel) {
+      return selectedOpenAIModel;
+    }
+  }
+  
+  // Default model selection logic (try each provider in order)
+  const model = openaiModel || o3MiniModel || deepSeekModel;
   if (!model) {
-    throw new Error('No model found');
+    throw new Error('No model found. Please configure at least one provider in your .env file.');
   }
 
   return model as LanguageModelV1;

@@ -1,4 +1,3 @@
-import FirecrawlApp, { SearchResponse } from '@mendable/firecrawl-js';
 import { generateObject } from 'ai';
 import { compact } from 'lodash-es';
 import pLimit from 'p-limit';
@@ -6,6 +5,7 @@ import { z } from 'zod';
 
 import { getModel, trimPrompt } from './ai/providers';
 import { systemPrompt } from './prompt';
+import webScraper, { SearchResponse } from './web-scraper';
 
 function log(...args: any[]) {
   console.log(...args);
@@ -26,15 +26,8 @@ type ResearchResult = {
   visitedUrls: string[];
 };
 
-// increase this if you have higher API rate limits
-const ConcurrencyLimit = Number(process.env.FIRECRAWL_CONCURRENCY) || 2;
-
-// Initialize Firecrawl with optional API key and optional base url
-
-const firecrawl = new FirecrawlApp({
-  apiKey: process.env.FIRECRAWL_KEY ?? '',
-  apiUrl: process.env.FIRECRAWL_BASE_URL,
-});
+// Use the environment variable for concurrency
+const ConcurrencyLimit = Number(process.env.PUPPETEER_CONCURRENCY) || 2;
 
 // take en user query, return a list of SERP queries
 async function generateSerpQueries({
@@ -90,13 +83,13 @@ async function processSerpResult({
   numFollowUpQuestions?: number;
 }) {
   const contents = compact(result.data.map(item => item.markdown)).map(content =>
-    trimPrompt(content, 25_000),
+    trimPrompt(content, 10_000),
   );
   log(`Ran ${query}, found ${contents.length} contents`);
 
   const res = await generateObject({
     model: getModel(),
-    abortSignal: AbortSignal.timeout(60_000),
+    abortSignal: AbortSignal.timeout(120_000),
     system: systemPrompt(),
     prompt: trimPrompt(
       `Given the following contents from a SERP search for the query <query>${query}</query>, generate a list of learnings from the contents. Return a maximum of ${numLearnings} learnings, but feel free to return less if the contents are clear. Make sure each learning is unique and not similar to each other. The learnings should be concise and to the point, as detailed and information dense as possible. Make sure to include any entities like people, places, companies, products, things, etc in the learnings, as well as any exact metrics, numbers, or dates. The learnings will be used to research the topic further.\n\n<contents>${contents
@@ -219,10 +212,9 @@ export async function deepResearch({
     serpQueries.map(serpQuery =>
       limit(async () => {
         try {
-          const result = await firecrawl.search(serpQuery.query, {
-            timeout: 15000,
+          const result = await webScraper.search(serpQuery.query, {
+            timeout: 100000,
             limit: 5,
-            scrapeOptions: { formats: ['markdown'] },
           });
 
           // Collect URLs from this search
@@ -291,4 +283,9 @@ export async function deepResearch({
     learnings: [...new Set(results.flatMap(r => r.learnings))],
     visitedUrls: [...new Set(results.flatMap(r => r.visitedUrls))],
   };
+}
+
+// Clean up resources when done
+export async function closeResources() {
+  await webScraper.close();
 }
